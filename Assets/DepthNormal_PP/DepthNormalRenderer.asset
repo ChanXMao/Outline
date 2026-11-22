@@ -54,11 +54,12 @@ MonoBehaviour:
   m_Active: 1
   m_eAlgorithm: 1
   m_eQuality: 2
+  m_bLegacyAntiAliasing: 1
   m_eAAMode: 1
-  m_kOutlineColor: {r: 0.13962269, g: 0.13962269, b: 0.13962269, a: 1}
+  m_kOutlineColor: {r: 0.0754717, g: 0.055535782, b: 0.055535782, a: 1}
   m_iWidthPixels: 2
   m_fDepthThreshold: 0.02
-  m_fNormalThreshold: 0.94
+  m_fNormalThreshold: 0.8
   m_kCaptureShader: {fileID: 4800000, guid: d499404cc6ad14c43a307882d01125ff, type: 3}
   m_kCompositeShader: {fileID: 4800000, guid: 05db6e60d2e5b1947a83252cd1ea44bd, type: 3}
   m_kSmaaArea: {fileID: 2800000, guid: d1f1048909d55cd4fa1126ab998f617e, type: 3}
