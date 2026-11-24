@@ -57,7 +57,8 @@ MonoBehaviour:
   m_bLegacyAntiAliasing: 1
   m_eAAMode: 1
   m_kOutlineColor: {r: 0.0754717, g: 0.055535782, b: 0.055535782, a: 1}
-  m_iWidthPixels: 2
+  m_iLegacyWidthPixels: 0
+  m_fWidthPixels: 2.6
   m_fDepthThreshold: 0.02
   m_fNormalThreshold: 0.8
   m_kCaptureShader: {fileID: 4800000, guid: d499404cc6ad14c43a307882d01125ff, type: 3}

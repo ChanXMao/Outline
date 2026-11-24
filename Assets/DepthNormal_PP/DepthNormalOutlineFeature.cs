@@ -51,9 +51,12 @@ namespace DepthNormalPP
         [FormerlySerializedAs("outlineColor")]
         public Color m_kOutlineColor = new Color(0.045f, 0.035f, 0.025f, 1f);
 
-        [FormerlySerializedAs("widthPixels")]
-        [Range(1, 8)]
-        public int m_iWidthPixels = 2;
+        [FormerlySerializedAs("widthPixels"), FormerlySerializedAs("m_iWidthPixels")]
+        [SerializeField, HideInInspector] private int m_iLegacyWidthPixels;
+
+        [Tooltip("Outline sampling radius in camera pixels. Fractional widths blend edge coverage.")]
+        [Range(1f, 8f)]
+        public float m_fWidthPixels = 2f;
 
         [FormerlySerializedAs("depthThreshold")]
         [Tooltip("Depth change relative to the distance of the centre sample.")]
@@ -111,6 +114,12 @@ namespace DepthNormalPP
             {
                 m_eAAMode = OutlineAAMode.None;
                 m_bLegacyAntiAliasing = true;
+            }
+
+            if (m_iLegacyWidthPixels > 0)
+            {
+                m_fWidthPixels = m_iLegacyWidthPixels;
+                m_iLegacyWidthPixels = 0;
             }
 
             DisposeMaterials();
@@ -202,6 +211,7 @@ namespace DepthNormalPP
             };
             private FilteringSettings m_kFilteringSettings;
             public RenderTextureDescriptor Descriptor { get; private set; }
+            public float WidthCoverage { get; private set; }
 
             public CapturePass(DepthNormalOutlineFeature kFeature)
             {
@@ -217,10 +227,8 @@ namespace DepthNormalPP
                 RenderTextureDescriptor kDescriptor = kRenderingData.cameraData.cameraTargetDescriptor;
                 float fScale = m_kFeature.m_eQuality == BufferQuality.Low ? 0.5f :
                     m_kFeature.m_eQuality == BufferQuality.Medium ? 0.75f : 1f;
-                int iCameraWidth = kDescriptor.width;
-                int iCameraHeight = kDescriptor.height;
-                kDescriptor.width = Mathf.Max(1, Mathf.RoundToInt(iCameraWidth * fScale));
-                kDescriptor.height = Mathf.Max(1, Mathf.RoundToInt(iCameraHeight * fScale));
+                kDescriptor.width = Mathf.Max(1, Mathf.RoundToInt(kDescriptor.width * fScale));
+                kDescriptor.height = Mathf.Max(1, Mathf.RoundToInt(kDescriptor.height * fScale));
                 kDescriptor.graphicsFormat = GraphicsFormat.R8G8B8A8_UNorm;
                 kDescriptor.depthBufferBits = 24;
                 if (m_kFeature.m_bUseCoverage)
@@ -241,10 +249,17 @@ namespace DepthNormalPP
                     ? RenderBufferStoreAction.Store
                     : RenderBufferStoreAction.DontCare);
 
-                // Never interpolate packed bytes. Keep width in camera pixels, with a one-texel minimum.
+                // Keep the detector on whole texel offsets. Below one texel, fade the final stroke.
+                float fRadius = Mathf.Clamp(m_kFeature.m_fWidthPixels, 1f, 8f) * fScale;
+                WidthCoverage = Mathf.Min(1f, fRadius);
+                fRadius = Mathf.Max(1f, fRadius);
+                float fLowerRadius = Mathf.Floor(fRadius);
+                float fTexelWidth = 1f / kDescriptor.width;
+                float fTexelHeight = 1f / kDescriptor.height;
+                kCommandBuffer.SetGlobalVector(ms_iCoverageGrid,
+                    new Vector4(kDescriptor.width, kDescriptor.height, fTexelWidth, fTexelHeight));
                 kCommandBuffer.SetGlobalVector(ms_iSampleStep, new Vector4(
-                    Mathf.Max(1f / kDescriptor.width, (float)m_kFeature.m_iWidthPixels / iCameraWidth),
-                    Mathf.Max(1f / kDescriptor.height, (float)m_kFeature.m_iWidthPixels / iCameraHeight), 0, 0));
+                    fLowerRadius * fTexelWidth, fLowerRadius * fTexelHeight, fRadius - fLowerRadius, 0));
             }
 
             public override void Execute(ScriptableRenderContext kContext, ref RenderingData kRenderingData)
@@ -285,8 +300,6 @@ namespace DepthNormalPP
                     ? FilterMode.Bilinear : FilterMode.Point;
                 kCommandBuffer.GetTemporaryRT(ms_iCoverageTexture, kDescriptor, eCoverageFilter);
                 RenderTextureDescriptor kCameraDescriptor = kRenderingData.cameraData.cameraTargetDescriptor;
-                kCommandBuffer.SetGlobalVector(ms_iCoverageGrid,
-                    new Vector4(kDescriptor.width, kDescriptor.height, 1f / kDescriptor.width, 1f / kDescriptor.height));
                 kCommandBuffer.SetGlobalVector(ms_iCoverageStep,
                     new Vector4(1f / kCameraDescriptor.width, 1f / kCameraDescriptor.height, 0, 0));
                 ConfigureTarget(ms_iCoverageTexture, ms_iPackedTexture);
@@ -370,16 +383,18 @@ namespace DepthNormalPP
             public override void Execute(ScriptableRenderContext kContext, ref RenderingData kRenderingData)
             {
                 CommandBuffer kCommandBuffer = CommandBufferPool.Get();
+                Color kColor = m_kFeature.m_kOutlineColor;
+                kColor.a *= m_kFeature.m_kCapture.WidthCoverage;
                 if (m_kFeature.m_bUseCoverage)
                 {
-                    m_kProperties.SetColor(ms_iLineColor, m_kFeature.m_kOutlineColor);
+                    m_kProperties.SetColor(ms_iLineColor, kColor);
                     m_kProperties.SetVector(ms_iThresholds,
                         new Vector4(m_kFeature.m_fNormalThreshold, m_kFeature.m_fDepthThreshold, 0, 0));
                     CoreUtils.DrawFullScreen(kCommandBuffer, m_kFeature.m_matComposite, m_kProperties, m_kFeature.m_iFilterPass);
                 }
                 else
                 {
-                    m_kFeature.DrawEdges(kCommandBuffer, m_kProperties, m_kFeature.m_kOutlineColor);
+                    m_kFeature.DrawEdges(kCommandBuffer, m_kProperties, kColor);
                 }
 
                 kContext.ExecuteCommandBuffer(kCommandBuffer);

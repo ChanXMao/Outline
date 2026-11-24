@@ -35,7 +35,7 @@ Shader "Hidden/DepthNormalPP/Edges"
         SAMPLER(sampler_LinearClamp);
         float2 _OutlineCoverageStep;
         float4 _OutlineCoverageGrid; // width, height, 1/width, 1/height
-        float2 _OutlineSampleStep;
+        float3 _OutlineSampleStep; // lower-radius UV step, then blend to the next radius
         float2 _OutlineThresholds;
         half4 _OutlineColor;
 
@@ -65,51 +65,50 @@ Shader "Hidden/DepthNormalPP/Edges"
             return output;
         }
 
-        float4 Tap(float2 uv, float2 offset)
+        float4 SurfaceAt(float2 uv)
         {
-            float2 sampleUV = UnityStereoTransformScreenSpaceTex(uv + offset * _OutlineSampleStep);
-            return DecodeOutlineSample(SAMPLE_TEXTURE2D_X(_OutlineDepthNormalTexture, sampler_PointClamp, sampleUV));
+            return DecodeOutlineSample(SAMPLE_TEXTURE2D_X_LOD(_OutlineDepthNormalTexture,
+                sampler_PointClamp, UnityStereoTransformScreenSpaceTex(uv), 0));
         }
 
-        half4 EdgeColor(float normal, float depth, float centerDepth, float minDepth)
+        float EdgeCoverage(float normal, float depth, float centerDepth, float minDepth)
         {
             float normalRatio = normal / max(_OutlineThresholds.x, 0.001);
             float depthRatio = depth / max(centerDepth * _OutlineThresholds.y, 2.0 / 65534.0);
-            float edge = minDepth < 0 ? 1 : smoothstep(0.8, 1.2, max(normalRatio, depthRatio));
-            return half4(_OutlineColor.rgb, _OutlineColor.a * edge);
+            return minDepth < 0 ? 1 : smoothstep(0.8, 1.2, max(normalRatio, depthRatio));
         }
 
-        half4 GradientColor(float4 gx, float4 gy, float centerDepth, float minDepth)
+        float GradientCoverage(float4 gx, float4 gy, float centerDepth, float minDepth)
         {
             float normal = sqrt(dot(gx.xyz, gx.xyz) + dot(gy.xyz, gy.xyz));
-            return EdgeColor(normal, length(float2(gx.w, gy.w)), centerDepth, minDepth);
+            return EdgeCoverage(normal, length(float2(gx.w, gy.w)), centerDepth, minDepth);
         }
 
-        half4 Roberts(Varyings input) : SV_Target
+        float RobertsCoverage(float2 uv, float2 stepUV, float4 center)
         {
-            UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-            float4 center = Tap(input.uv, 0);
-            float4 topLeft = Tap(input.uv, float2(-1, -1));
-            float4 topRight = Tap(input.uv, float2(1, -1));
-            float4 bottomLeft = Tap(input.uv, float2(-1, 1));
-            float4 bottomRight = Tap(input.uv, float2(1, 1));
+            float2 diagonal = float2(stepUV.x, -stepUV.y);
+            float4 topLeft = SurfaceAt(uv - stepUV);
+            float4 topRight = SurfaceAt(uv + diagonal);
+            float4 bottomLeft = SurfaceAt(uv - diagonal);
+            float4 bottomRight = SurfaceAt(uv + stepUV);
             float minDepth = min(center.w, min(min(topLeft.w, topRight.w), min(bottomLeft.w, bottomRight.w)));
-            return GradientColor(
+            return GradientCoverage(
                 (bottomRight - topLeft) * 0.707107, (topRight - bottomLeft) * 0.707107, center.w, minDepth);
         }
 
-        half4 Gradient3x3(Varyings input, float cornerWeight, float axisWeight, float scale)
+        float Gradient3x3(float2 uv, float2 stepUV, float4 center, float cornerWeight, float axisWeight, float scale)
         {
-            UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-            float4 topLeft = Tap(input.uv, float2(-1, -1));
-            float4 top = Tap(input.uv, float2(0, -1));
-            float4 topRight = Tap(input.uv, float2(1, -1));
-            float4 left = Tap(input.uv, float2(-1, 0));
-            float4 center = Tap(input.uv, 0);
-            float4 right = Tap(input.uv, float2(1, 0));
-            float4 bottomLeft = Tap(input.uv, float2(-1, 1));
-            float4 bottom = Tap(input.uv, float2(0, 1));
-            float4 bottomRight = Tap(input.uv, float2(1, 1));
+            float2 dx = float2(stepUV.x, 0);
+            float2 dy = float2(0, stepUV.y);
+            float2 diagonal = float2(stepUV.x, -stepUV.y);
+            float4 topLeft = SurfaceAt(uv - stepUV);
+            float4 top = SurfaceAt(uv - dy);
+            float4 topRight = SurfaceAt(uv + diagonal);
+            float4 left = SurfaceAt(uv - dx);
+            float4 right = SurfaceAt(uv + dx);
+            float4 bottomLeft = SurfaceAt(uv - diagonal);
+            float4 bottom = SurfaceAt(uv + dy);
+            float4 bottomRight = SurfaceAt(uv + stepUV);
             float4 gx = (cornerWeight * (topRight - topLeft)
                 + axisWeight * (right - left)
                 + cornerWeight * (bottomRight - bottomLeft)) * scale;
@@ -118,23 +117,11 @@ Shader "Hidden/DepthNormalPP/Edges"
                 + cornerWeight * (bottomRight - topRight)) * scale;
             float minDepth = min(min(topLeft.w, top.w), min(topRight.w, left.w));
             minDepth = min(minDepth, min(min(center.w, right.w), min(bottomLeft.w, min(bottom.w, bottomRight.w))));
-            return GradientColor(gx, gy, center.w, minDepth);
-        }
-
-        half4 Sobel(Varyings input) : SV_Target
-        {
-            return Gradient3x3(input, 1.0, 2.0, 0.25);
-        }
-
-        half4 Scharr(Varyings input) : SV_Target
-        {
-            // Match Sobel's response to an axis-aligned unit step.
-            return Gradient3x3(input, 3.0, 10.0, 1.0 / 16.0);
+            return GradientCoverage(gx, gy, center.w, minDepth);
         }
 
         struct CrossSamples
         {
-            float4 center;
             float4 left;
             float4 right;
             float4 top;
@@ -142,15 +129,16 @@ Shader "Hidden/DepthNormalPP/Edges"
             float minDepth;
         };
 
-        CrossSamples SampleCross(float2 uv)
+        CrossSamples SampleCross(float2 uv, float2 stepUV, float4 center)
         {
+            float2 dx = float2(stepUV.x, 0);
+            float2 dy = float2(0, stepUV.y);
             CrossSamples samples;
-            samples.center = Tap(uv, 0);
-            samples.left = Tap(uv, float2(-1, 0));
-            samples.right = Tap(uv, float2(1, 0));
-            samples.top = Tap(uv, float2(0, -1));
-            samples.bottom = Tap(uv, float2(0, 1));
-            samples.minDepth = min(samples.center.w,
+            samples.left = SurfaceAt(uv - dx);
+            samples.right = SurfaceAt(uv + dx);
+            samples.top = SurfaceAt(uv - dy);
+            samples.bottom = SurfaceAt(uv + dy);
+            samples.minDepth = min(center.w,
                 min(min(samples.left.w, samples.right.w), min(samples.top.w, samples.bottom.w)));
             return samples;
         }
@@ -160,39 +148,89 @@ Shader "Hidden/DepthNormalPP/Edges"
             return float2(dot(difference.xyz, difference.xyz), abs(difference.w));
         }
 
-        half4 CrossMax(Varyings input) : SV_Target
+        float CrossMaxCoverage(CrossSamples samples, float4 center)
+        {
+            float2 horizontal = max(
+                NormalDepthDifference(samples.left - center),
+                NormalDepthDifference(samples.right - center));
+            float2 vertical = max(
+                NormalDepthDifference(samples.top - center),
+                NormalDepthDifference(samples.bottom - center));
+            float2 strongest = max(horizontal, vertical);
+            return EdgeCoverage(sqrt(strongest.x), strongest.y, center.w, samples.minDepth);
+        }
+
+        float LaplacianCoverage(CrossSamples samples, float4 center)
+        {
+            float4 curvature = (samples.left - center) + (samples.right - center)
+                             + (samples.top - center) + (samples.bottom - center);
+            return EdgeCoverage(length(curvature.xyz), abs(curvature.w), center.w, samples.minDepth);
+        }
+
+        static const int kRoberts = 0;
+        static const int kSobel = 1;
+        static const int kCrossMax = 2;
+        static const int kScharr = 3;
+        static const int kLaplacian = 4;
+
+        // The operator is constant at each entry point, so only its own kernel is compiled in.
+        float DetectCoverage(float2 uv, float2 stepUV, float4 center, int edgeOperator)
+        {
+            if (edgeOperator == kRoberts) return RobertsCoverage(uv, stepUV, center);
+            if (edgeOperator == kSobel) return Gradient3x3(uv, stepUV, center, 1.0, 2.0, 0.25);
+            // Match Sobel's response to an axis-aligned unit step.
+            if (edgeOperator == kScharr) return Gradient3x3(uv, stepUV, center, 3.0, 10.0, 1.0 / 16.0);
+
+            CrossSamples samples = SampleCross(uv, stepUV, center);
+            if (edgeOperator == kCrossMax) return CrossMaxCoverage(samples, center);
+            return LaplacianCoverage(samples, center);
+        }
+
+        half4 DrawEdge(Varyings input, int edgeOperator)
         {
             UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-            CrossSamples samples = SampleCross(input.uv);
-            float2 horizontal = max(
-                NormalDepthDifference(samples.left - samples.center),
-                NormalDepthDifference(samples.right - samples.center));
-            float2 vertical = max(
-                NormalDepthDifference(samples.top - samples.center),
-                NormalDepthDifference(samples.bottom - samples.center));
-            float2 strongest = max(horizontal, vertical);
-            return EdgeColor(sqrt(strongest.x), strongest.y, samples.center.w, samples.minDepth);
+            float4 center = SurfaceAt(input.uv);
+            float2 stepUV = _OutlineSampleStep.xy;
+            float coverage = DetectCoverage(input.uv, stepUV, center, edgeOperator);
+            // Blend the detector outputs so packed normals and depths remain point sampled.
+            UNITY_BRANCH
+            if (_OutlineSampleStep.z > 0.0)
+            {
+                float widerCoverage = DetectCoverage(input.uv, stepUV + _OutlineCoverageGrid.zw, center, edgeOperator);
+                coverage = lerp(coverage, widerCoverage, _OutlineSampleStep.z);
+            }
+            return half4(_OutlineColor.rgb, _OutlineColor.a * coverage);
+        }
+
+        half4 Roberts(Varyings input) : SV_Target
+        {
+            return DrawEdge(input, kRoberts);
+        }
+
+        half4 Sobel(Varyings input) : SV_Target
+        {
+            return DrawEdge(input, kSobel);
+        }
+
+        half4 CrossMax(Varyings input) : SV_Target
+        {
+            return DrawEdge(input, kCrossMax);
+        }
+
+        half4 Scharr(Varyings input) : SV_Target
+        {
+            return DrawEdge(input, kScharr);
         }
 
         half4 Laplacian(Varyings input) : SV_Target
         {
-            UNITY_SETUP_STEREO_EYE_INDEX_POST_VERTEX(input);
-            CrossSamples samples = SampleCross(input.uv);
-            float4 curvature = (samples.left - samples.center) + (samples.right - samples.center)
-                             + (samples.top - samples.center) + (samples.bottom - samples.center);
-            return EdgeColor(length(curvature.xyz), abs(curvature.w), samples.center.w, samples.minDepth);
+            return DrawEdge(input, kLaplacian);
         }
 
         half CoverageAt(float2 uv)
         {
             return SAMPLE_TEXTURE2D_X_LOD(_OutlineCoverageTexture, sampler_PointClamp,
                 UnityStereoTransformScreenSpaceTex(uv), 0).r;
-        }
-
-        float4 SurfaceAt(float2 uv)
-        {
-            return DecodeOutlineSample(SAMPLE_TEXTURE2D_X_LOD(_OutlineDepthNormalTexture,
-                sampler_PointClamp, UnityStereoTransformScreenSpaceTex(uv), 0));
         }
 
         bool SameSurface(float4 center, float4 other)

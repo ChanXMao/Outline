@@ -35,7 +35,7 @@ namespace DepthNormalPP.Editor
             { nameof(DepthNormalOutlineFeature.m_eQuality), "Quality" },
             { nameof(DepthNormalOutlineFeature.m_eAAMode), "AA Mode" },
             { nameof(DepthNormalOutlineFeature.m_kOutlineColor), "Outline Color" },
-            { nameof(DepthNormalOutlineFeature.m_iWidthPixels), "Width Pixels" },
+            { nameof(DepthNormalOutlineFeature.m_fWidthPixels), "Width Pixels" },
             { nameof(DepthNormalOutlineFeature.m_fDepthThreshold), "Depth Threshold" },
             { nameof(DepthNormalOutlineFeature.m_fNormalThreshold), "Normal Threshold" }
         };
